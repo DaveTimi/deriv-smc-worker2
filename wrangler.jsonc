@@ -1,5 +1,5 @@
 {
-  "name": "deriv-smc-bot",
+  "name": "deriv-smc-worker2",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
 
@@ -21,8 +21,8 @@
   "vars": {
     // "new" = developers.deriv.com API (PAT + OTP). "legacy" = ws.derivws.com + authorize.
     "DERIV_API_MODE": "new",
-    "DERIV_APP_ID": "REPLACE_WITH_YOUR_APP_ID",
-    "DERIV_ACCOUNT_ID": "REPLACE_WITH_YOUR_DEMO_ACCOUNT_ID",
+    "DERIV_APP_ID": "34AgesKZsVLmIHX3iDWnQ",
+    "DERIV_ACCOUNT_ID": "202528678",
 
     // Safety: signals are logged but NO orders are sent until this is "false".
     "DRY_RUN": "true",
