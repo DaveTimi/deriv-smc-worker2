@@ -1,0 +1,55 @@
+{
+  "name": "deriv-smc-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+
+  // Free-plan friendly: three staggered crons, each is its own invocation (own CPU budget)
+  // and scans ONE symbol. Cron N -> SYMBOLS[N]. Keep this list in sync with CRONS in src/index.ts.
+  "triggers": {
+    "crons": ["0-59/5 * * * *", "1-59/5 * * * *", "2-59/5 * * * *"]
+  },
+
+  // Cloudflare Workers AI (free daily allowance) - used by the optional AI gate
+  "ai": { "binding": "AI" },
+
+  "durable_objects": {
+    "bindings": [{ "name": "BOT_STATE", "class_name": "BotState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BotState"] }],
+
+  // Non-secret settings. Secrets (DERIV_TOKEN, ADMIN_TOKEN, ANTHROPIC_API_KEY ...) use `wrangler secret put`.
+  "vars": {
+    // "new" = developers.deriv.com API (PAT + OTP). "legacy" = ws.derivws.com + authorize.
+    "DERIV_API_MODE": "new",
+    "DERIV_APP_ID": "REPLACE_WITH_YOUR_APP_ID",
+    "DERIV_ACCOUNT_ID": "REPLACE_WITH_YOUR_DEMO_ACCOUNT_ID",
+
+    // Safety: signals are logged but NO orders are sent until this is "false".
+    "DRY_RUN": "true",
+
+    // up to 3 symbols (one per cron)
+    "SYMBOLS": "frxEURUSD,frxGBPUSD,frxXAUUSD",
+    // scalp = 15M/5M/1M, intraday = 1H/15M/5M, swing = 4H/1H/15M
+    "PROFILES": "scalp,intraday,swing",
+
+    "RISK_PCT": "1",
+    "MAX_TRADES_PER_DAY": "4",
+    "MAX_CONSEC_LOSSES": "3",
+    "DAILY_LOSS_PCT": "3",
+    "MAX_OPEN": "2",
+    "MAX_TOTAL_RISK_PCT": "2",
+    // cap on total open notional (stake x multiplier) as a multiple of balance
+    "MAX_LEVERAGE": "20",
+    "MAX_STAKE_PCT": "25",
+    // confluence points needed (of 6) on top of bias + POI tap + entry-timeframe break
+    "MIN_CONFLUENCE": "4",
+    "FALLBACK_MULTIPLIERS": "30,50,100,200,300,500",
+
+    // Optional AI second-opinion gate. "workers-ai" = free Cloudflare models (no key needed),
+    // "claude" = Anthropic API (needs the ANTHROPIC_API_KEY secret, paid). Leave AI_MODEL empty for the default (workers-ai: @cf/openai/gpt-oss-120b).
+    "AI_GATE": "true",
+    "AI_PROVIDER": "workers-ai",
+    "AI_MODEL": "",
+    "AI_FAIL_MODE": "reject"
+  }
+}
