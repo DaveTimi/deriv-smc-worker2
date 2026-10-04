@@ -21,7 +21,7 @@
   "vars": {
     // "new" = developers.deriv.com API (PAT + OTP). "legacy" = ws.derivws.com + authorize.
     "DERIV_API_MODE": "new",
-    "DERIV_APP_ID": "34AgesKZsVLmIHX3iDWnQ",
+    "DERIV_APP_ID": "34Al2e6859UtZzyLQAq61",
     "DERIV_ACCOUNT_ID": "202528678",
 
     // Safety: signals are logged but NO orders are sent until this is "false".
