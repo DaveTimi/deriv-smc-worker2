@@ -1,0 +1,55 @@
+name: Backtest
+
+# Run it from the GitHub app/website: Actions tab -> Backtest -> Run workflow.
+# Results appear on the run page (Summary) and as a downloadable "backtest-results" file.
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days to test (more = more trustworthy)"
+        default: "30"
+      symbols:
+        description: "Symbols, comma-separated (blank = use wrangler.jsonc)"
+        default: ""
+      profiles:
+        description: "Profiles: scalp,intraday,swing (blank = use wrangler.jsonc)"
+        default: ""
+      min_confluence:
+        description: "Minimum confluence (blank = use wrangler.jsonc)"
+        default: ""
+      risk_pct:
+        description: "Risk % per trade (blank = use wrangler.jsonc)"
+        default: ""
+      balance:
+        description: "Starting balance"
+        default: "10000"
+      cost_pct:
+        description: "Cost per trade as % of position size (0 = none)"
+        default: "0"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run backtest
+        env:
+          # optional secret, only needed if Deriv's public candle feed refuses the connection
+          DERIV_TOKEN: ${{ secrets.DERIV_TOKEN }}
+          BT_DAYS: ${{ inputs.days }}
+          BT_BALANCE: ${{ inputs.balance }}
+          BT_COST_PCT: ${{ inputs.cost_pct }}
+          SYMBOLS: ${{ inputs.symbols }}
+          PROFILES: ${{ inputs.profiles }}
+          MIN_CONFLUENCE: ${{ inputs.min_confluence }}
+          RISK_PCT: ${{ inputs.risk_pct }}
+        run: node --experimental-strip-types scripts/backtest.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-results
+          path: backtest-out/
