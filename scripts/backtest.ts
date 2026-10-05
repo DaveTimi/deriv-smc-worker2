@@ -514,9 +514,24 @@ export async function fetchM1(ws: Sender, symbol: string, startEpoch: number, lo
     await sleep(300);
   }
 
-  // pass 2: backward from the newest candle, only if pass 1 left a big gap
+  // pass 2: explicit [start, end] windows of 5000 minutes, in case the feed ignored the open-ended request
   if (span() < wantSpan * 0.8) {
-    log(`${symbol}: forward paging covered only ${(span() / 86400).toFixed(1)} days, trying backward paging`);
+    log(`${symbol}: forward paging covered only ${(span() / 86400).toFixed(1)} days, trying explicit time windows`);
+    const win = 5000 * 60;
+    const nowS = Math.floor(Date.now() / 1000);
+    for (let w = startEpoch; w < nowS; w += win) {
+      const e = Math.min(w + win - 60, nowS);
+      const cs = toCandles(await request(ws, { ticks_history: symbol, style: "candles", granularity: 60, start: w, end: e, count: 5000 }));
+      let added = 0;
+      for (const c of cs) if (!all.has(c.t)) (all.set(c.t, c), added++);
+      if (cs.length) log(`${symbol} window from ${iso(w)}: ${cs.length} candles, ${added} new`);
+      await sleep(250);
+    }
+  }
+
+  // pass 3: backward from the oldest candle held, only if there is still a big gap
+  if (span() < wantSpan * 0.8) {
+    log(`${symbol}: still only ${(span() / 86400).toFixed(1)} days, trying backward paging`);
     // continue from just before the oldest candle already held (or from the newest if none yet)
     let end: number | "latest" = all.size ? Math.min(...all.keys()) - 1 : "latest";
     for (let page = 1; page <= 300; page++) {
@@ -535,6 +550,21 @@ export async function fetchM1(ws: Sender, symbol: string, startEpoch: number, lo
     }
   }
   return [...all.values()].filter((c) => c.t >= startEpoch).sort((a, b) => a.t - b.t);
+}
+
+
+/** Diagnostics: ask for the newest candles at several granularities and log how much history comes back. */
+export async function probeFeed(ws: Sender, symbol: string, log: (m: string) => void = console.log): Promise<void> {
+  log(`--- probing what Deriv returns for ${symbol} ---`);
+  for (const g of [60, 300, 900, 3600, 14400, 86400]) {
+    try {
+      const cs = toCandles(await request(ws, { ticks_history: symbol, style: "candles", granularity: g, end: "latest", count: 5000 }));
+      log(`granularity ${g}s, newest 5000 requested: ${cs.length} candles${cs.length ? ` (${iso(cs[0].t)} to ${iso(cs[cs.length - 1].t)})` : ""}`);
+    } catch (e) {
+      log(`granularity ${g}s: ${(e as Error).message}`);
+    }
+    await sleep(250);
+  }
 }
 
 // ------------------------------------------------------------------ config + CLI
@@ -644,6 +674,13 @@ async function main() {
     const cs = data[sym] ?? [];
     const gotDays = cs.length ? (cs[cs.length - 1].t - cs[0].t) / 86400 : 0;
     if (gotDays < days * 0.7) {
+      try {
+        const pws = await connect(env);
+        await probeFeed(pws, sym);
+        pws.close();
+      } catch (e) {
+        console.log(`probe failed: ${(e as Error).message}`);
+      }
       throw new Error(`${sym}: Deriv only returned ${gotDays.toFixed(1)} days of history (${cs.length} candles), but ${days} days were requested. Check the "forward page" lines above in the log.`);
     }
   }
