@@ -1,4 +1,4 @@
-name: Backtest
+herename: Backtest
 
 # Run it from the GitHub app/website: Actions tab -> Backtest -> Run workflow.
 # Results appear on the run page (Summary) and as a downloadable "backtest-results" file.
