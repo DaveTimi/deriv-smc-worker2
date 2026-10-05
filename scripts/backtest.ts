@@ -323,13 +323,18 @@ function group(trades: Trade[], key: (t: Trade) => string): string {
   return ["| | Trades | Win rate | Avg R | Profit factor | Net P/L |", "|---|---|---|---|---|---|", ...rows].join("\n");
 }
 
-export function report(r: BtResult, cfg: Config, o: { days: number; costPct: number }): string {
+export function report(r: BtResult, cfg: Config, o: { days: number; costPct: number; data?: Record<string, Candle[]> }): string {
   const s = stats(r.trades);
   const ret = ((r.finalBalance - r.startBalance) / r.startBalance) * 100;
   const L: string[] = [];
   L.push(`# Backtest: ${iso(r.startT)} to ${iso(r.endT)} UTC (${o.days} days)`);
   L.push(`Symbols: ${cfg.symbols.join(", ")} | Profiles: ${cfg.profiles.map((p) => p.name).join(", ")} | Risk ${cfg.riskPct}% | Min confluence ${cfg.minConfluence}`);
   L.push("");
+  if (o.data) {
+    L.push("## Data downloaded");
+    for (const [sym, cs] of Object.entries(o.data)) L.push(`- ${sym}: ${cs.length} one-minute candles, ${cs.length ? iso(cs[0].t) + " to " + iso(cs[cs.length - 1].t) : "none"}`);
+    L.push("");
+  }
   L.push("## Result");
   L.push(`- Trades: **${s.n}** (${s.wins} wins) | Win rate: **${f2(s.winRate)}%**`);
   L.push(`- Average result per trade: **${f2(s.expectancyR)} R** (positive = profitable on average)`);
@@ -462,7 +467,7 @@ async function connect(env: Record<string, string | undefined>): Promise<Ws> {
   throw new Error(`Could not connect to Deriv (${errors.join("; ")}). Add a DERIV_TOKEN secret to the repo and try again.`);
 }
 
-async function request(ws: Ws, payload: Record<string, unknown>): Promise<any> {
+async function request(ws: Sender, payload: Record<string, unknown>): Promise<any> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await ws.send(payload);
@@ -474,19 +479,60 @@ async function request(ws: Ws, payload: Record<string, unknown>): Promise<any> {
   }
 }
 
-/** Download 1-minute candles for [startEpoch, now], 5000 per request, newest first. */
-export async function fetchM1(ws: Ws, symbol: string, startEpoch: number): Promise<Candle[]> {
+interface Sender {
+  send(payload: Record<string, unknown>): Promise<any>;
+}
+
+const toCandles = (r: any): Candle[] => (r?.candles ?? []).map((k: any) => ({ t: Number(k.epoch), o: +k.open, h: +k.high, l: +k.low, c: +k.close }));
+
+/**
+ * Download 1-minute candles for [startEpoch, now], 5000 per request. Pages forward from `startEpoch` first;
+ * if that leaves a big gap (the feed ignored `start`), it also pages backward from the newest candle.
+ */
+export async function fetchM1(ws: Sender, symbol: string, startEpoch: number, log: (m: string) => void = console.log): Promise<Candle[]> {
   const all = new Map<number, Candle>();
-  let end: number | "latest" = "latest";
-  for (let guard = 0; guard < 400; guard++) {
-    const r = await request(ws, { ticks_history: symbol, style: "candles", granularity: 60, end, count: 5000 });
-    const cs: Candle[] = (r.candles ?? []).map((k: any) => ({ t: Number(k.epoch), o: +k.open, h: +k.high, l: +k.low, c: +k.close }));
-    if (!cs.length) break;
-    for (const c of cs) all.set(c.t, c);
-    const first = cs[0].t;
-    if (first <= startEpoch || (end !== "latest" && first >= end)) break;
-    end = first - 1;
+  const span = () => {
+    const ts = [...all.keys()];
+    return ts.length ? Math.max(...ts) - Math.min(...ts) : 0;
+  };
+  const wantSpan = Math.floor(Date.now() / 1000) - startEpoch;
+
+  // pass 1: forward from the start
+  let cursor = startEpoch;
+  for (let page = 1; page <= 300; page++) {
+    const cs = toCandles(await request(ws, { ticks_history: symbol, style: "candles", granularity: 60, start: cursor, end: "latest", count: 5000 }));
+    if (!cs.length) {
+      log(`${symbol} forward page ${page}: empty`);
+      break;
+    }
+    let added = 0;
+    for (const c of cs) if (!all.has(c.t)) (all.set(c.t, c), added++);
+    log(`${symbol} forward page ${page}: ${cs.length} candles (${iso(cs[0].t)} to ${iso(cs[cs.length - 1].t)}), ${added} new`);
+    const last = cs[cs.length - 1].t;
+    if (!added || last < cursor || cs.length < 5000) break;
+    cursor = last + 60;
     await sleep(300);
+  }
+
+  // pass 2: backward from the newest candle, only if pass 1 left a big gap
+  if (span() < wantSpan * 0.8) {
+    log(`${symbol}: forward paging covered only ${(span() / 86400).toFixed(1)} days, trying backward paging`);
+    // continue from just before the oldest candle already held (or from the newest if none yet)
+    let end: number | "latest" = all.size ? Math.min(...all.keys()) - 1 : "latest";
+    for (let page = 1; page <= 300; page++) {
+      const cs = toCandles(await request(ws, { ticks_history: symbol, style: "candles", granularity: 60, end, count: 5000 }));
+      if (!cs.length) {
+        log(`${symbol} backward page ${page}: empty`);
+        break;
+      }
+      let added = 0;
+      for (const c of cs) if (!all.has(c.t)) (all.set(c.t, c), added++);
+      log(`${symbol} backward page ${page}: ${cs.length} candles (${iso(cs[0].t)} to ${iso(cs[cs.length - 1].t)}), ${added} new`);
+      const first = cs[0].t;
+      if (!added || first <= startEpoch) break;
+      end = first - 1;
+      await sleep(300);
+    }
   }
   return [...all.values()].filter((c) => c.t >= startEpoch).sort((a, b) => a.t - b.t);
 }
@@ -594,6 +640,13 @@ async function main() {
     ws?.close();
   }
 
+  for (const sym of cfg.symbols) {
+    const cs = data[sym] ?? [];
+    const gotDays = cs.length ? (cs[cs.length - 1].t - cs[0].t) / 86400 : 0;
+    if (gotDays < days * 0.7) {
+      throw new Error(`${sym}: Deriv only returned ${gotDays.toFixed(1)} days of history (${cs.length} candles), but ${days} days were requested. Check the "forward page" lines above in the log.`);
+    }
+  }
   const lasts = cfg.symbols.map((s) => data[s]?.[data[s].length - 1]?.t ?? 0);
   const endT = Math.max(...lasts) + 60;
   if (endT <= 60) throw new Error("No candle data came back from Deriv");
@@ -601,7 +654,7 @@ async function main() {
 
   console.log(`Running ${cfg.symbols.length} symbol(s) x ${cfg.profiles.length} profile(s)...`);
   const res = runBacktest(cfg, data, { startT, endT, balance, costPct });
-  const md = report(res, cfg, { days, costPct });
+  const md = report(res, cfg, { days, costPct, data });
   mkdirSync(outDir, { recursive: true });
   writeFileSync(`${outDir}/report.md`, md);
   writeFileSync(`${outDir}/trades.csv`, tradesCsv(res.trades));
